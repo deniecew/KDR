@@ -1,0 +1,160 @@
+---
+title: 
+  "KEY DRIVER SUMMARY - PROVIDER (VIRTUAL)" 
+format: html
+theme: sandstone
+
+params:
+  service: "MD"
+  type : "APP"
+  npi : "1497404032"
+---
+
+```{r}
+#| echo: false
+#| warning: false 
+
+
+#load packages----
+library(tidyverse)
+library(gt)
+library(tinytex)
+
+load("G:/Press Ganey II/Reports/Ad Hoc/DEEP DIVE/Key Driver Reports/data/alldata_fy25.Rdata")
+load("G:/Press Ganey II/Reports/Ad Hoc/DEEP DIVE/Key Driver Reports/data/questions.Rdata")
+
+
+##set data parameters: service line, clinic, outcome variable(s)----
+cutoff_date <- as.Date("2024-12-31")
+# outvar <- ifelse(params$type == "Physician","O7","SS54")
+# outvar_all<-c("SS54", "MED7","O2","O3","O7", "I69") #outcome variable
+
+if (params$service =='ON'){
+  outvar<-"O7"
+  outvar_all<-c("MED7","O2","O3","O7") #Outpatient Oncology
+} else {
+  outvar<-"CP10"
+  outvar_all<-c("CP10","O3","O4") # Virtual Health
+}
+
+
+questions <- questions %>%
+  filter (service == params$service)
+
+
+data<-alldata %>%
+  filter(type == params$type) %>%
+  filter(service == params$service) %>%
+  filter(date > cutoff_date) 
+
+
+name_filter<-data %>%
+  filter(npi == params$npi) %>%
+  distinct(name) %>%
+  slice_tail(n = 1)
+
+
+#Percentile Rank
+indiv_rank<-data %>%
+  select(survey_id,npi,type,varname,top_box) %>% #subset original data set
+  group_by(npi,varname) %>%
+  summarise(tbscore=sum(top_box)/n()*100,n=n()) %>% #calculate topbox
+  #filter(n>29) %>%  #remove small samples
+  group_by(varname) %>%
+  mutate(percent_rank=100*(rank(tbscore)/length(tbscore))) %>%
+  filter(npi == params$npi)
+
+indiv_rank <- merge(indiv_rank,questions,by="varname") 
+
+# takeout <- subset(indiv_rank, !(varname %in% outvar_all))
+
+kdr<- indiv_rank %>%
+  subset(!(varname %in% outvar_all)) %>%
+  # top_n(10,tbscore) %>%
+  arrange(desc(tbscore)) %>%
+  select(question,tbscore,percent_rank) %>%
+  # mutate(across(c(corr,ratio),round, 2) )%>%
+  mutate(tbscore=round(tbscore,1)) %>%
+  mutate(percent_rank=round(percent_rank,0)) %>%
+  # mutate(across(c(driver_index,percent_rank),round)) %>%
+  mutate(tbscore_rank=paste(tbscore," (",percent_rank,")")) %>%
+  select(-c(tbscore,percent_rank)) %>%
+  rename('Question' = question) %>%
+  # rename('Linear Correlation' = corr) %>%
+  # rename('Top-Box Ratio' = ratio) %>%
+  # rename('Driver Index' = driver_index) %>%
+  rename('Top-Box Score (Percentile Rank)' = tbscore_rank)
+  
+# kdr <- rowid_to_column(kdr)
+
+# kdr <- kdr %>%
+#   rename('Priority'=rowid)
+
+ltr <- indiv_rank %>%
+  filter(varname==outvar) %>%
+  select(question,tbscore,percent_rank,n) %>%
+  mutate(percent_rank=round(percent_rank,0)) %>%
+  mutate(tbscore=round(tbscore,1)) %>%
+  mutate(tbscore_rank=paste(tbscore," (",percent_rank,")")) %>%
+  select(-c(tbscore,percent_rank)) %>%
+  rename('Question' = question) %>%
+  rename('Top-Box Score (Percentile Rank)' = tbscore_rank)
+
+```
+
+#### `r name_filter` (`r params$npi`)
+
+------------------------------------------------------------------------
+
+<!--  *** inserts a horizontal line -->
+
+<!-- [The top box score is 100 for the Institutional Measure:\ -->
+
+<!-- ***"`r ltr[,1]`"***.\ -->
+
+<!-- \ -->
+
+[The table below presents the top box scores and the corresponding percentile rank for all questions on the survey.\
+\
+The questions are sorted from highest to lowest top box score.]{.important}
+
+```{r}
+#| echo: false
+#| warning: false
+
+ltr2 <- ltr %>%
+  select("Question", "Top-Box Score (Percentile Rank)")
+
+
+total<-rbind(ltr2,kdr)
+
+ n <- ltr[,2]
+
+total%>%
+  gt()%>%
+  cols_align(align="center",
+             columns = everything()) %>%
+  tab_options(
+    table.font.size = px(14L),
+    column_labels.font.size = px(15L),
+    column_labels.background.color = 'dodgerblue4') %>%
+  cols_align(
+    align = "left",
+    columns = Question) %>%
+  tab_style(
+    style=cell_text(align="center"),
+    locations = cells_column_labels(columns = everything())
+            )
+
+
+```
+
+<!-- {{< pagebreak >}} -->
+
+**Notes:**
+
+The data was collected from ***`r ltr[,2]`*** surveys received from ***`r min(data$date)`*** to ***`r max(data$date)`***.
+
+The [percentile rank]{.underline} is an internal rank that compares all **`r params$type`s** within the service line. It is calculated by counting the number of scores less than the provider's top box score (x) and dividing by the number of distinct provider's scores (n). A percentile rank of 90 means the score is better than 90% of all providers' scores within Moffitt.
+
+=======

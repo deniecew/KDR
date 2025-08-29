@@ -1,0 +1,225 @@
+---
+title: 
+  "KEY DRIVER SUMMARY - PROVIDER (VIRTUAL)" 
+format: html
+theme: sandstone
+
+params:
+  service: "MD"
+  type : "APP"
+  npi : "1497404032"
+ 
+---
+
+```{r}
+#| echo: false
+#| warning: false 
+
+
+#load packages----
+library(tidyverse)
+
+load("G:/Press Ganey II/Reports/Ad Hoc/DEEP DIVE/Key Driver Reports/data/alldata_fy25.Rdata")
+load("G:/Press Ganey II/Reports/Ad Hoc/DEEP DIVE/Key Driver Reports/data/questions.Rdata")
+
+
+##set data parameters: service line, clinic, outcome variable(s)----
+
+cutoff_date <- as.Date("2024-12-31")
+
+if (params$service =='ON'){
+  outvar<-"O7"
+  outvar_all<-c("MED7","O2","O3","O7","I69") #Outpatient Oncology
+} else {
+  outvar<-"CP10"
+  outvar_all<-c("CP10","O3","O4") # Virtual Health
+}
+
+questions <- questions %>%
+  filter (service == params$service)
+
+
+data<-alldata %>%
+  filter(type == params$type) %>%
+  filter(service == params$service) %>%
+  filter(date > cutoff_date) 
+
+name_filter<-data %>%
+  filter(npi == params$npi) %>%
+  distinct(name) %>%
+  slice_tail(n = 1)
+
+#Correlations
+r<-data%>%
+  filter(npi == params$npi) %>%
+  select(survey_id,varname,response) %>% 
+  pivot_wider(names_from = varname, values_from = response) %>% #convert from long to wide format
+  mutate (survey_id = as.numeric(survey_id)) %>% #not sure why I have to do this for it not to give me an error.
+  cor(use='pairwise.complete.obs')
+
+
+tmp1<-r[-1,outvar,drop=FALSE] #drop the survey id, select outvar column & convert to data frame
+tmp1<-as.data.frame(tmp1)
+tmp1$varname <- rownames(tmp1)
+colnames(tmp1)[1] = "corr"
+tmp1 <- tmp1 %>%
+  filter(corr != "NA")
+
+
+#Top Box Ratios
+#Step 1. convert clinic level data to wide data set nrows = survey count
+tbwide<-data%>%
+  filter(npi == params$npi) %>%
+  select(survey_id,varname,top_box) %>% #use only topbox data
+  spread(varname,top_box) %>% #convert from long to wide format
+  select(-c(survey_id))
+
+# test<-addmargins(xtabs(~O7+O7,tbwide))
+# test
+
+#Step 2. create functions to create table(x) and calculate tbratio(y)
+tbratio<-function(data,var){
+  x<-addmargins(xtabs(~data[,var]+data[,outvar],data))
+  y<-((x[2,2]+0.5)/(x[2,3]+1))/((x[1,2]+0.5)/(x[1,3]+1)) 
+  return(y)
+}
+
+#calculate tbratio across all variables & store as data frame
+tmp2<-data.frame()
+for (i in 1:dim(tbwide)[2]){ 
+  m<-tbratio(tbwide,i)
+  tmp2[i,1] <- colnames(tbwide)[i]
+  tmp2[i,2] <- m
+}
+
+colnames(tmp2)<-c('varname','ratio')
+
+#Percentile Rank
+indiv_rank<-data %>%
+  select(survey_id,npi,type,varname,top_box) %>% #subset original data set
+  group_by(npi,varname) %>%
+  summarise(tbscore=sum(top_box)/n()*100,n=n()) %>% #calculate topbox
+  #filter(n>29) %>%  #remove small samples
+  group_by(varname) %>%
+  mutate(percent_rank=100*(rank(tbscore)/length(tbscore))) %>%
+  filter(npi == params$npi)
+
+#merge rankdata, tbratio (tmp2), and correlations(tmp1) to form a table
+df1<-merge(indiv_rank,tmp1)
+df2<-merge(df1,tmp2)
+df3<-subset(df2, !(varname %in% outvar_all))#removes the response variables from priority index calculations
+
+#Sorted KDR
+
+kd0<-df3%>%
+  mutate(rescaled_corr = (corr-min(corr))/(max(corr)-min(corr)),
+         rescaled_tbratio = (ratio-min(ratio))/(max(ratio)-min(ratio)),
+         driver_index = 100*((rescaled_corr + rescaled_tbratio)/2),
+         priority_index = driver_index-(0.5*((percent_rank)))
+  )
+
+
+kd1<-left_join(df2,kd0)
+
+kd2<-merge(kd1,questions,by="varname") 
+
+kdr<-kd2 %>%
+  top_n(10,priority_index) %>%
+  arrange(desc(priority_index)) %>%
+  select(question,corr,ratio,driver_index,tbscore,percent_rank) %>%
+  mutate(across(c(corr,ratio),round, 2) )%>%
+  mutate(tbscore=round(tbscore,1)) %>%
+  mutate(across(c(driver_index,percent_rank),round)) %>%
+  # across(a:b, \(x) mean(x, na.rm = TRUE))
+  mutate(tbscore_rank=paste(tbscore," (",percent_rank,")")) %>%
+  select(-c(tbscore,percent_rank)) %>%
+  rename('Question' = question) %>%
+  rename('Linear Correlation' = corr) %>%
+  rename('Top-Box Ratio' = ratio) %>%
+  rename('Driver Index' = driver_index) %>%
+  rename('Top-Box Score (Percentile Rank)' = tbscore_rank)
+
+kdr<-rowid_to_column(kdr)
+
+kdr<-kdr %>%
+  rename('Priority'=rowid)
+
+ltr<-kd2 %>%
+  filter(varname==outvar) %>%
+  select(question,tbscore,percent_rank,n) %>%
+  mutate(percent_rank=round(percent_rank,0)) %>%
+  mutate(tbscore=round(tbscore,1)) %>%
+  mutate(tbscore_rank=paste(tbscore," (",percent_rank,")")) %>%
+  rename('Question' = question) %>%
+  rename('Top-Box Score' = tbscore) %>%
+  rename('Percentile Rank'= percent_rank) %>%
+  rename('Top-Box Score (Percentile Rank)' = tbscore_rank)
+```
+
+#### `r name_filter` (`r params$npi`)
+
+------------------------------------------------------------------------
+
+<!--  *** inserts a horizontal line -->
+
+[This table lists the top ten survey questions, sorted in order of priority, that drive the respondents' top box score for the key performance indicator:]{.important}
+
+<center>***"`r ltr[,1]`"***</center>
+
+```{r}
+#| echo: false
+#| warning: false
+
+library(gt)
+library(tinytex)
+
+ltr2<-ltr %>%
+  mutate("Priority"="") %>%
+  mutate("Linear Correlation"="") %>%
+  mutate("Top-Box Ratio"="") %>%
+  mutate("Driver Index"="") %>%
+  select("Priority","Question","Linear Correlation","Top-Box Ratio","Driver Index","Top-Box Score (Percentile Rank)")
+
+
+total<-rbind(ltr2,kdr)
+
+n <- ltr[,4]
+
+
+total%>%
+  gt()%>%
+  cols_align(align="center",
+             columns = everything()) %>%
+  tab_options(
+    table.font.size = px(14L),
+    column_labels.font.size = px(15L),
+    column_labels.font.weight = "bold",
+    # column_labels.background.color = '#002f6c') %>% #Moffitt Deep Blue
+   column_labels.background.color = '#a4dbe8') %>% #Moffitt Light Blue
+  # cols_width(
+  #   starts_with("Question") ~ px(500)) %>%
+  cols_align(
+    align = "left",
+    columns = Question) %>%
+  tab_style(
+    style=cell_text(align="center"),
+    locations = cells_column_labels(columns = everything())
+  )
+
+```
+
+{{< pagebreak >}}
+
+**Notes:**
+
+The data was collected from ***`r ltr[,4]`***  surveys received from ***`r min(data$date)`*** to ***`r max(data$date)`***.
+
+The [percentile rank]{.underline} is an internal rank that compares all **`r params$type`s** within the Outpatient Virtual Health service line. It is calculated by counting the number of scores less than the provider's top box score (x) and dividing by the number of distinct provider's scores (n). A percentile rank of 90 means the score is better than 90% of all providers' scores within Moffitt.
+
+The [correlation]{.underline} measures the strength of the linear association between the response to the key performance indicator and the question of interest. The `r ltr[,4]` surveys analyzed **`r (if(ltr[,4] == 30) {"meets"} else if (ltr[,4] < 30) {"is less than"} else {"exceeds"})`** the minimum number of surveys (30) required to come to a **statistically sound** conclusion regarding the correlation.
+
+The [top box ratio]{.underline} calculates the likelihood of giving the top box score for the key performance indicator, given the score is a top box for the question of interest.
+
+The [driver index]{.underline} sorts the combined correlation and top box ratio scores.
+
+=======
